@@ -48,6 +48,17 @@ check "LiteLLM Proxy"       "http://localhost:${LITELLM_PORT:-4000}/health/readi
 check "Qdrant"              "http://localhost:${QDRANT_HTTP_PORT:-6333}/healthz"
 check "Open WebUI"          "http://localhost:${OPEN_WEBUI_PORT:-3000}/health"
 
+# Postgres has no HTTP health endpoint — shell out to pg_isready inside the
+# container instead of the curl-based `check` helper above.
+if docker compose --project-directory "${REPO_ROOT}" exec -T postgres \
+        pg_isready -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" >/dev/null 2>&1; then
+    echo "  [OK]   Postgres (LiteLLM state store)  (pg_isready)"
+    PASS=$((PASS + 1))
+else
+    echo "  [FAIL] Postgres (LiteLLM state store)  (pg_isready)"
+    FAIL=$((FAIL + 1))
+fi
+
 echo "-----------------------------------------"
 echo "Passed: ${PASS}  Failed: ${FAIL}"
 

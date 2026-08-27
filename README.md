@@ -12,6 +12,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for the full architecture, air-gap parameterizati
 | vLLM | `vllm/vllm-openai` | LLM inference (chat/completions) |
 | vLLM (embed mode) | `vllm/vllm-openai` | Embeddings, served in pooling mode |
 | LiteLLM Proxy | `ghcr.io/berriai/litellm` | Unified OpenAI-compatible gateway/routing |
+| Postgres | `postgres` | LiteLLM's state store — Admin UI, virtual keys, budgets, spend tracking |
 | Qdrant | `qdrant/qdrant` | Vector database |
 | NGINX | `nginx` | TLS-terminating reverse proxy / ingress |
 
@@ -31,7 +32,7 @@ docker compose up -d
 ./scripts/healthcheck.sh
 ```
 
-Open WebUI: `https://localhost:${NGINX_HTTPS_PORT}` (default `8443`, self-signed cert). Direct API gateway: `http://localhost:${LITELLM_PORT}` (default `4000`).
+Open WebUI: `https://localhost:${NGINX_HTTPS_PORT}` (default `8443`, self-signed cert). Direct API gateway: `http://localhost:${LITELLM_PORT}` (default `4000`). LiteLLM Admin UI (virtual keys, budgets, spend): `http://localhost:${LITELLM_PORT}/ui`, login with `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` from `.env` — requires the `postgres` service, which is on by default.
 
 For a disconnected target, run `scripts/package_airgap.sh` on the connected side to bundle a `docker save` image tarball, the staged `models/` tree, and configs for transfer; `docker load` the image tarball on the target and copy the rest into place before `docker compose up -d`.
 
@@ -62,6 +63,8 @@ These were hit and fixed while standing this stack up on this hardware/host; wor
 - **Tool calling:** Open WebUI sends `tool_choice: "auto"` by default. vLLM needs `--enable-auto-tool-choice --tool-call-parser <parser>` explicitly, or it 400s on the first prompt. Set via `VLLM_TOOL_CALL_PARSER` in `.env` — default `hermes` matches the Qwen2.5-Instruct family; change it if you swap `MODEL_NAME` to a different model family (see vLLM's `--tool-call-parser` choices).
 - **NGINX path routing:** LiteLLM is proxied at `/litellm/`, not `/api/` — Open WebUI's own frontend calls its own backend at `/api/...` on the same origin, so mounting anything else there breaks the UI with an opaque "Backend Required" error.
 - **LiteLLM ↔ vLLM embeddings:** LiteLLM always forwards `encoding_format: null` to `openai/`-passthrough providers, which vLLM's `/v1/embeddings` schema rejects. Open WebUI's RAG embedding calls are wired directly to the embeddings service (bypassing LiteLLM) to avoid this; see the comment in `config/litellm/config.yaml`.
+- **Open WebUI's vector DB:** it defaults to a bundled local Chroma store, not Qdrant — `VECTOR_DB=qdrant` / `QDRANT_URI` are set explicitly in `docker-compose.yml` so Knowledge base ingestion and retrieval actually go through the stack's Qdrant service.
+- **LiteLLM Admin UI needs Postgres:** LiteLLM's `/ui` login (and virtual keys/budgets/spend tracking) requires a database — without one it fails with `Authentication Error. Not connected to DB!` even with correct credentials. The `postgres` service provides this; LiteLLM runs its own schema migration automatically on startup, no manual step needed. The UI login (`LITELLM_UI_USERNAME`/`LITELLM_UI_PASSWORD`) is intentionally a separate credential from `LITELLM_MASTER_KEY`, so the all-powerful API key doesn't double as a UI password handed out to admins.
 
 ## Feeding a codebase into the RAG pipeline
 

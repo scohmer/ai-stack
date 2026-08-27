@@ -19,6 +19,7 @@ networks:
 
 volumes:
   qdrant_data:
+  postgres_data:
 
 services:
 
@@ -159,6 +160,33 @@ services:
       - ai-stack-net
 
   # ---------------------------------------------------------------------
+  # Postgres — LiteLLM's state store (Admin UI, virtual keys, budgets,
+  # rate limits, spend/usage tracking). LiteLLM runs its own schema
+  # migrations automatically on startup once DATABASE_URL is set — no
+  # manual migration step needed.
+  # ---------------------------------------------------------------------
+  postgres:
+    image: ${REGISTRY_PREFIX}${POSTGRES_IMAGE}:${POSTGRES_VERSION}
+    container_name: ai-stack-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
   # LiteLLM Proxy — Unified OpenAI-compatible API Gateway
   # ---------------------------------------------------------------------
   litellm:
@@ -166,12 +194,24 @@ services:
     container_name: ai-stack-litellm
     restart: unless-stopped
     depends_on:
-      - vllm
-      - embeddings
-      - qdrant
+      vllm:
+        condition: service_started
+      embeddings:
+        condition: service_started
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      # UI login: username defaults to "admin" if unset; password falls back
+      # to LITELLM_MASTER_KEY if UI_PASSWORD is unset. Setting a dedicated
+      # UI_PASSWORD here keeps the Admin UI credential separate from the
+      # all-powerful API master key.
+      - UI_USERNAME=${LITELLM_UI_USERNAME}
+      - UI_PASSWORD=${LITELLM_UI_PASSWORD}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     ports:
       - "${LITELLM_PORT}:4000"
