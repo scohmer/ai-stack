@@ -1,0 +1,199 @@
+###############################################################################
+# AI-Stack — Static Orchestrator
+#
+# This file is an immutable, environment-agnostic blueprint (CLAUDE.md §2).
+# Every image, tag, port, path, GPU id, model name, and credential below is
+# sourced from `.env` — nothing here should ever need to change between a
+# connected dev box and a disconnected production deployment. Copy
+# `.env.example` to `.env` and edit values there instead of editing this file.
+###############################################################################
+
+# Pinned explicitly so the compose project name (and therefore the auto-namespaced
+# network name) stays stable regardless of which path (a symlink vs. its real
+# target) the shell's cwd happens to resolve through when you run `docker compose`.
+name: ai-stack
+
+networks:
+  ai-stack-net:
+    driver: bridge
+
+volumes:
+  qdrant_data:
+
+services:
+
+  # ---------------------------------------------------------------------
+  # NGINX — Reverse Proxy / Ingress
+  # ---------------------------------------------------------------------
+  nginx:
+    image: ${REGISTRY_PREFIX}${NGINX_IMAGE}:${NGINX_VERSION}
+    container_name: ai-stack-nginx
+    restart: unless-stopped
+    depends_on:
+      - open-webui
+      - litellm
+    ports:
+      - "${NGINX_HTTP_PORT}:80"
+      - "${NGINX_HTTPS_PORT}:443"
+    volumes:
+      - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ${NGINX_SSL_CERT_PATH}:/etc/nginx/certs/server.crt:ro
+      - ${NGINX_SSL_KEY_PATH}:/etc/nginx/certs/server.key:ro
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
+  # Open WebUI — Frontend / UI
+  # ---------------------------------------------------------------------
+  open-webui:
+    image: ${REGISTRY_PREFIX}${OPEN_WEBUI_IMAGE}:${OPEN_WEBUI_VERSION}
+    container_name: ai-stack-open-webui
+    restart: unless-stopped
+    depends_on:
+      - litellm
+    environment:
+      - WEBUI_SECRET_KEY=${WEBUI_SECRET_KEY}
+      # Route chat traffic through the LiteLLM gateway rather than talking
+      # to vllm directly.
+      - OPENAI_API_BASE_URL=http://litellm:4000/v1
+      - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
+      - ENABLE_OLLAMA_API=false
+      # RAG embeddings call the embeddings service DIRECTLY, not through
+      # litellm: litellm v1.83.14-stable always forwards `encoding_format:
+      # null` to openai/-passthrough providers, which vllm v0.28.0's
+      # /v1/embeddings schema rejects outright (see config/litellm/config.yaml
+      # comment). Bypassing litellm here sidesteps that incompatibility.
+      - RAG_EMBEDDING_ENGINE=openai
+      - RAG_EMBEDDING_MODEL=${EMBEDDING_SERVED_MODEL_NAME}
+      - RAG_OPENAI_API_BASE_URL=http://embeddings:8000/v1
+      - RAG_OPENAI_API_KEY=not-required
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
+    ports:
+      - "${OPEN_WEBUI_PORT}:8080"
+    volumes:
+      - ./config/open-webui:/app/backend/data
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
+  # vLLM — Inference Engine (chat/completions)
+  # ---------------------------------------------------------------------
+  vllm:
+    image: ${REGISTRY_PREFIX}${VLLM_IMAGE}:${VLLM_VERSION}
+    container_name: ai-stack-vllm
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${VLLM_GPU_IDS}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}
+      - HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE}
+    command: >
+      --model /models/${MODEL_DIR}
+      --served-model-name ${SERVED_MODEL_NAME}
+      --max-model-len ${VLLM_MAX_MODEL_LEN}
+      --dtype ${VLLM_DTYPE}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION}
+      --enable-auto-tool-choice
+      --tool-call-parser ${VLLM_TOOL_CALL_PARSER}
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "${VLLM_PORT}:8000"
+    volumes:
+      - ${LOCAL_MODELS_DIR}:/models:ro
+      # FIPS-host / Ubuntu-base-image workaround — see .env.example comment.
+      - ${FIPS_OVERRIDE_FILE}:/proc/sys/crypto/fips_enabled:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
+  # Embeddings — NVIDIA NeMo / NV-Embed, served via vLLM's embedding task
+  # ---------------------------------------------------------------------
+  embeddings:
+    image: ${REGISTRY_PREFIX}${EMBEDDINGS_IMAGE}:${EMBEDDINGS_VERSION}
+    container_name: ai-stack-embeddings
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${EMBEDDINGS_GPU_IDS}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}
+      - HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE}
+    command: >
+      --model /models/${EMBEDDING_MODEL_DIR}
+      --served-model-name ${EMBEDDING_SERVED_MODEL_NAME}
+      --runner pooling
+      --trust-remote-code
+      --max-model-len ${EMBEDDING_MAX_MODEL_LEN}
+      --gpu-memory-utilization ${EMBEDDINGS_GPU_MEMORY_UTILIZATION}
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "${EMBEDDINGS_PORT}:8000"
+    volumes:
+      - ${LOCAL_MODELS_DIR}:/models:ro
+      # FIPS-host / Ubuntu-base-image workaround — see .env.example comment.
+      - ${FIPS_OVERRIDE_FILE}:/proc/sys/crypto/fips_enabled:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
+  # LiteLLM Proxy — Unified OpenAI-compatible API Gateway
+  # ---------------------------------------------------------------------
+  litellm:
+    image: ${REGISTRY_PREFIX}${LITELLM_IMAGE}:${LITELLM_VERSION}
+    container_name: ai-stack-litellm
+    restart: unless-stopped
+    depends_on:
+      - vllm
+      - embeddings
+      - qdrant
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_SALT_KEY=${LITELLM_SALT_KEY}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    ports:
+      - "${LITELLM_PORT}:4000"
+    volumes:
+      - ./config/litellm/config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
+  # Qdrant — Vector Database
+  # ---------------------------------------------------------------------
+  qdrant:
+    image: ${REGISTRY_PREFIX}${QDRANT_IMAGE}:${QDRANT_VERSION}
+    container_name: ai-stack-qdrant
+    restart: unless-stopped
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    ports:
+      - "${QDRANT_HTTP_PORT}:6333"
+      - "${QDRANT_GRPC_PORT}:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ai-stack-net

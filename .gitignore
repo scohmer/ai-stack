@@ -1,0 +1,19 @@
+# Secrets — never commit the real environment file
+.env
+
+# Model weights are large and staged locally per-host, not versioned
+models/*
+!models/.gitkeep
+
+# TLS material
+config/nginx/certs/*
+!config/nginx/certs/.gitkeep
+
+# Open WebUI runtime data (sqlite db, uploads, etc.)
+config/open-webui/*
+!config/open-webui/.gitkeep
+
+# Air-gap packaging output
+dist/
+*.tar
+*.tar.gz
