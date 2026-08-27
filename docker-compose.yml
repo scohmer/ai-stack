@@ -68,6 +68,11 @@ services:
       - RAG_EMBEDDING_MODEL=${EMBEDDING_SERVED_MODEL_NAME}
       - RAG_OPENAI_API_BASE_URL=http://embeddings:8000/v1
       - RAG_OPENAI_API_KEY=not-required
+      # Open WebUI defaults to a bundled local Chroma vector store — point it
+      # at the Qdrant service instead, matching CLAUDE.md's stack architecture.
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
       - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
     ports:
       - "${OPEN_WEBUI_PORT}:8080"
