@@ -19,9 +19,9 @@
 # fine. Most OpenAI client SDKs already send both fields this way by default.
 
 model_list:
-  - model_name: qwen2.5-3b-instruct
+  - model_name: qwen2.5-7b-instruct
     litellm_params:
-      model: openai/qwen2.5-3b-instruct
+      model: openai/qwen2.5-7b-instruct
       api_base: http://vllm:8000/v1
       api_key: "not-required"
 

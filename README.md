@@ -12,6 +12,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for the full architecture, air-gap parameterizati
 | vLLM | `vllm/vllm-openai` | LLM inference (chat/completions) |
 | vLLM (embed mode) | `vllm/vllm-openai` | Embeddings, served in pooling mode |
 | LiteLLM Proxy | `ghcr.io/berriai/litellm` | Unified OpenAI-compatible gateway/routing |
+| Postgres | `postgres` | LiteLLM's state store — Admin UI, virtual keys, budgets, spend tracking |
 | Qdrant | `qdrant/qdrant` | Vector database |
 | NGINX | `nginx` | TLS-terminating reverse proxy / ingress |
 
@@ -31,7 +32,7 @@ docker compose up -d
 ./scripts/healthcheck.sh
 ```
 
-Open WebUI: `https://localhost:${NGINX_HTTPS_PORT}` (default `8443`, self-signed cert). Direct API gateway: `http://localhost:${LITELLM_PORT}` (default `4000`).
+Open WebUI: `https://localhost:${NGINX_HTTPS_PORT}` (default `8443`, self-signed cert). Direct API gateway: `http://localhost:${LITELLM_PORT}` (default `4000`). LiteLLM Admin UI (virtual keys, budgets, spend): `http://localhost:${LITELLM_PORT}/ui`, login with `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD` from `.env` — requires the `postgres` service, which is on by default.
 
 For a disconnected target, run `scripts/package_airgap.sh` on the connected side to bundle a `docker save` image tarball, the staged `models/` tree, and configs for transfer; `docker load` the image tarball on the target and copy the rest into place before `docker compose up -d`.
 
@@ -62,6 +63,10 @@ These were hit and fixed while standing this stack up on this hardware/host; wor
 - **Tool calling:** Open WebUI sends `tool_choice: "auto"` by default. vLLM needs `--enable-auto-tool-choice --tool-call-parser <parser>` explicitly, or it 400s on the first prompt. Set via `VLLM_TOOL_CALL_PARSER` in `.env` — default `hermes` matches the Qwen2.5-Instruct family; change it if you swap `MODEL_NAME` to a different model family (see vLLM's `--tool-call-parser` choices).
 - **NGINX path routing:** LiteLLM is proxied at `/litellm/`, not `/api/` — Open WebUI's own frontend calls its own backend at `/api/...` on the same origin, so mounting anything else there breaks the UI with an opaque "Backend Required" error.
 - **LiteLLM ↔ vLLM embeddings:** LiteLLM always forwards `encoding_format: null` to `openai/`-passthrough providers, which vLLM's `/v1/embeddings` schema rejects. Open WebUI's RAG embedding calls are wired directly to the embeddings service (bypassing LiteLLM) to avoid this; see the comment in `config/litellm/config.yaml`.
+- **Open WebUI's vector DB:** it defaults to a bundled local Chroma store, not Qdrant — `VECTOR_DB=qdrant` / `QDRANT_URI` are set explicitly in `docker-compose.yml` so Knowledge base ingestion and retrieval actually go through the stack's Qdrant service.
+- **LiteLLM Admin UI needs Postgres:** LiteLLM's `/ui` login (and virtual keys/budgets/spend tracking) requires a database — without one it fails with `Authentication Error. Not connected to DB!` even with correct credentials. The `postgres` service provides this; LiteLLM runs its own schema migration automatically on startup, no manual step needed. The UI login (`LITELLM_UI_USERNAME`/`LITELLM_UI_PASSWORD`) is intentionally a separate credential from `LITELLM_MASTER_KEY`, so the all-powerful API key doesn't double as a UI password handed out to admins.
+- **Model size vs. tool-calling reliability:** Open WebUI has built-in tools (e.g. `search_knowledge_bases`) that models can call autonomously, on by default, in every chat — not scoped to whether you attached Knowledge. Small models (the original default, `Qwen2.5-3B-Instruct`) are prone to malformed calls on multi-parameter schemas — e.g. filling in optional args that have visible defaults while dropping the one required arg that doesn't. The default is now `Qwen2.5-7B-Instruct-AWQ` (4-bit, ~5GB) specifically for more reliable tool-calling; quantized so it still comfortably shares this test box's single GPU with the embeddings service. `--quantization` is intentionally not passed on the vLLM command — it auto-detects from the model's `quantization_config` in `config.json`, so `docker-compose.yml` doesn't need to change between quantized and full-precision models.
+- **`VLLM_MAX_MODEL_LEN` is a VRAM budget knob, not just a model capability setting.** The model natively supports up to 32768 tokens, but vLLM must pre-allocate enough KV cache to serve at least one request at that length — with this test box's `VLLM_GPU_MEMORY_UTILIZATION=0.35` budget, 32768 needs ~1.75GB of KV cache against only ~1.61GB available, and vLLM refuses to start at all (`ValueError: ... KV cache is needed, which is larger than the available KV cache memory`, then crash-loops under `restart: unless-stopped`). Conversely, too low a value (the original `8192`) causes a *different* failure at request time — `ContextWindowExceededError` — the moment a RAG-retrieved source pushes the prompt past the cap. `24576` is the current default: comfortably under both failure modes, with headroom left for concurrent requests, not just a single one right at the edge. If you raise `VLLM_GPU_MEMORY_UTILIZATION` (e.g. because embeddings' `0.55` has slack in practice), you can push `VLLM_MAX_MODEL_LEN` higher too — vLLM's own startup error reports the exact maximum supportable length for whatever budget you give it.
 
 ## Feeding a codebase into the RAG pipeline
 
