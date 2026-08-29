@@ -53,6 +53,7 @@ scripts/
   generate_self_signed_cert.sh
   healthcheck.sh
   ingest_git_repo.py        # Bulk-ingest a git repo's source tree into an Open WebUI Knowledge base
+  ingest_mediawiki.py        # Bulk-ingest a MediaWiki instance's pages into an Open WebUI Knowledge base
 ```
 
 ## Known environment-specific gotchas
@@ -97,6 +98,36 @@ in every chat without re-attaching.
 **Note:** Open WebUI doesn't dedupe uploads by content — re-running against the same
 `--knowledge-name` adds duplicates. Delete the old Knowledge base first, or rely on the
 default naming (repo name + commit short SHA) to get a fresh one each run.
+
+## Feeding a MediaWiki instance into the RAG pipeline
+
+Open WebUI has no native MediaWiki connector either, so `scripts/ingest_mediawiki.py`
+logs into a wiki's Action API (`clientlogin`), enumerates every page in the requested
+namespace(s), pulls each page's current wikitext, filters out empty/oversized pages,
+and uploads what's left into an Open WebUI Knowledge base the same way the git script
+does.
+
+```bash
+# requires: python3 -m pip install --user requests (already present on this host)
+python3 scripts/ingest_mediawiki.py --wiki-url http://wiki.example.com \
+  --username <user> --password <pass> --api-key <open-webui-api-key> --dry-run   # preview first
+
+python3 scripts/ingest_mediawiki.py --wiki-url http://wiki.example.com \
+  --username <user> --password <pass> --api-key <open-webui-api-key>
+```
+
+Or set `MEDIAWIKI_BASE_URL` / `MEDIAWIKI_USERNAME` / `MEDIAWIKI_PASSWORD` /
+`OPEN_WEBUI_API_KEY` in `.env` and just run it with no flags. See `--help` for the full
+option list (`--namespace` repeatable, `--knowledge-name`, `--max-file-size-kb`, ...).
+
+Defaults to namespace `0` (Main) only — Talk/User/Special/etc. are excluded unless you
+explicitly ask for them via `--namespace`/`MEDIAWIKI_NAMESPACES`. Always authenticates
+via `clientlogin` (a regular account works; a
+[bot password](https://www.mediawiki.org/wiki/Special:BotPasswords) is better practice
+for anything long-lived, since it's scopeable/revocable independent of a real login).
+
+Same re-run caveat as the git script applies: re-running against the same
+`--knowledge-name` adds duplicates rather than deduping.
 
 ## Verification
 
