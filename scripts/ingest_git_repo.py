@@ -24,6 +24,7 @@ to a specific commit).
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -85,12 +86,21 @@ def is_probably_binary(path: Path, sniff_bytes: int = 8192) -> bool:
 
 
 def clone_repo(repo_url: str, token: str, branch: str | None, dest: Path) -> str:
-    """Shallow-clone repo_url into dest using a GitLab PRIVATE-TOKEN header
-    (avoids embedding the token in the URL / .git/config). Returns the
-    checked-out commit SHA (short)."""
+    """Shallow-clone repo_url into dest using an HTTP Basic Authorization
+    header (avoids embedding the token in the URL / .git/config, where it'd
+    otherwise land in .git/config in plaintext and in shell/process history).
+
+    NOTE: this is deliberately *not* GitLab's PRIVATE-TOKEN header. That
+    header is a REST/GraphQL API mechanism only — GitLab's git-over-HTTP
+    (smart HTTP) backend authenticates exclusively via HTTP Basic, for every
+    token type (personal, project, group, deploy). Confirmed against a real
+    instance: PRIVATE-TOKEN header -> 401 on /info/refs, HTTP Basic -> 200.
+    The username is conventionally "oauth2" (GitLab ignores its actual
+    value for token auth — only the password/token matters)."""
     cmd = ["git"]
     if token:
-        cmd += ["-c", f"http.extraHeader=PRIVATE-TOKEN: {token}"]
+        basic = base64.b64encode(f"oauth2:{token}".encode()).decode()
+        cmd += ["-c", f"http.extraHeader=Authorization: Basic {basic}"]
     cmd += ["clone", "--depth", "1"]
     if branch:
         cmd += ["--branch", branch]
