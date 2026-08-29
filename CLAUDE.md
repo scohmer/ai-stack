@@ -11,6 +11,7 @@
   - **API Gateway & Routing:** LiteLLM Proxy (`${LITELLM_IMAGE}:${LITELLM_VERSION}`)
   - **Vector DB:** Qdrant (`${QDRANT_IMAGE}:${QDRANT_VERSION}`)
   - **Embeddings:** US-Sourced NVIDIA NeMo / NV-Embed series (`${EMBEDDINGS_IMAGE}:${EMBEDDINGS_VERSION}`)
+  - **State Store:** Postgres (`${POSTGRES_IMAGE}:${POSTGRES_VERSION}`) — backs the LiteLLM Admin UI, virtual keys, budgets, and spend tracking. LiteLLM self-migrates its schema on startup once `DATABASE_URL` is set; no manual migration step.
 
 ---
 
@@ -48,8 +49,16 @@
 - Reload NGINX without downtime: `docker compose exec nginx nginx -s reload`
 - Verify vLLM LLM API: `curl http://localhost:${VLLM_PORT:-8000}/v1/models`
 - Verify NeMo Embeddings endpoint: `curl http://localhost:${EMBEDDINGS_PORT:-8001}/v1/embeddings -H "Content-Type: application/json" -d '{"input": "health check", "model": "'"${EMBEDDING_MODEL_NAME}"'"}'`
-- Verify LiteLLM Proxy endpoint: `curl http://localhost:${LITELLM_PORT:-4000}/health`
+- Verify LiteLLM Proxy endpoint (unauthenticated liveness/config check — plain `/health` requires an `Authorization: Bearer ${LITELLM_MASTER_KEY}` header): `curl http://localhost:${LITELLM_PORT:-4000}/health/readiness`
 - Verify Qdrant cluster health: `curl http://localhost:${QDRANT_HTTP_PORT:-6333}/healthz`
+- Verify Postgres (LiteLLM state store): `docker compose exec postgres pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}`
+- Run the full suite above in one shot: `./scripts/healthcheck.sh`
+- LiteLLM Admin UI (virtual keys, budgets, spend): `http://localhost:${LITELLM_PORT:-4000}/ui`, login with `LITELLM_UI_USERNAME` / `LITELLM_UI_PASSWORD`
+
+### RAG Ingestion Tooling
+Open WebUI has no native git/GitLab or MediaWiki connectors — these scripts bulk-ingest external sources into an Open WebUI Knowledge base via its REST API, so RAG-backed chats can retrieve from them. Both are fully `.env`-driven (see `GITLAB_*`/`MEDIAWIKI_*`/`INGEST_*`/`OPEN_WEBUI_API_KEY` in `.env.example`) with `--flag` overrides and a `--dry-run` preview mode; see `--help` on each.
+- Ingest a git/GitLab repo: `python3 scripts/ingest_git_repo.py --dry-run`
+- Ingest a MediaWiki instance: `python3 scripts/ingest_mediawiki.py --dry-run`
 
 ---
 
@@ -59,15 +68,21 @@
 AI-Stack/
 ├── docker-compose.yml           # Static orchestrator (all images, versions, and paths use vars)
 ├── .env.example                 # Master template for image tags, versions, ports, paths, and GPUs
+├── prefilled-example.env        # Fully filled-out example .env (fake secrets) for onboarding/docs
 ├── config/
 │   ├── nginx/
 │   │   ├── nginx.conf           # Reverse proxy configuration & upstream balancing
-│   │   └── conf.d/default.conf  # SSL termination, WebSockets, and service routes
+│   │   ├── conf.d/default.conf  # SSL termination, WebSockets, and service routes
+│   │   └── certs/                # TLS cert/key (gitignored; generate_self_signed_cert.sh populates this)
 │   ├── litellm/
 │   │   └── config.yaml          # Model mapping and proxy routing for LLMs + NeMo
-│   └── open-webui/              # Open WebUI persistent configurations
+│   ├── open-webui/              # Open WebUI persistent configurations (gitignored)
+│   └── fips-workaround/         # FIPS-host bind-mount override for vllm/embeddings — see .env.example
 ├── models/                      # Host directory for offline model weights / HF cache
 └── scripts/
     ├── healthcheck.sh           # Stack verification script
     ├── package_airgap.sh        # Archive generator for images & model weights
-    └── download_models.sh       # Pre-staging model download script (connected side)
+    ├── download_models.sh       # Pre-staging model download script (connected side)
+    ├── generate_self_signed_cert.sh  # Air-gapped-friendly TLS cert generation (no ACME/Let's Encrypt)
+    ├── ingest_git_repo.py       # Bulk-ingest a git/GitLab repo into an Open WebUI RAG Knowledge base
+    └── ingest_mediawiki.py      # Bulk-ingest a MediaWiki instance into an Open WebUI RAG Knowledge base
