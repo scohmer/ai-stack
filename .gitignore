@@ -17,3 +17,7 @@ config/open-webui/*
 dist/
 *.tar
 *.tar.gz
+
+# Python bytecode caches (e.g. from running scripts/ingest_git_repo.py)
+__pycache__/
+*.pyc
