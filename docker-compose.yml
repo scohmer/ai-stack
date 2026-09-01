@@ -36,9 +36,16 @@ services:
     ports:
       - "${NGINX_HTTP_PORT}:80"
       - "${NGINX_HTTPS_PORT}:443"
+    # config/nginx/templates/*.conf.template is rendered into /etc/nginx/conf.d
+    # at container start by the stock nginx image's own envsubst-on-templates
+    # entrypoint script — substituting ${VAR}s from the environment below.
+    # /etc/nginx/conf.d itself is intentionally NOT bind-mounted: it's
+    # generated fresh inside the container every start, not host-editable.
+    environment:
+      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}
     volumes:
       - ./config/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./config/nginx/templates:/etc/nginx/templates:ro
       - ${NGINX_SSL_CERT_PATH}:/etc/nginx/certs/server.crt:ro
       - ${NGINX_SSL_KEY_PATH}:/etc/nginx/certs/server.key:ro
     networks:
@@ -63,7 +70,7 @@ services:
       # RAG embeddings call the embeddings service DIRECTLY, not through
       # litellm: litellm v1.83.14-stable always forwards `encoding_format:
       # null` to openai/-passthrough providers, which vllm v0.28.0's
-      # /v1/embeddings schema rejects outright (see config/litellm/config.yaml
+      # /v1/embeddings schema rejects outright (see config/litellm/config.yaml.template
       # comment). Bypassing litellm here sidesteps that incompatibility.
       - RAG_EMBEDDING_ENGINE=openai
       - RAG_EMBEDDING_MODEL=${EMBEDDING_SERVED_MODEL_NAME}
@@ -212,11 +219,27 @@ services:
       # all-powerful API master key.
       - UI_USERNAME=${LITELLM_UI_USERNAME}
       - UI_PASSWORD=${LITELLM_UI_PASSWORD}
-    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    # config.yaml.template hardcodes no model names — it's rendered into a
+    # real config.yaml here at container start, substituting SERVED_MODEL_NAME
+    # / EMBEDDING_SERVED_MODEL_NAME from .env (the same vars vllm/embeddings'
+    # --served-model-name flags use) via `sed`, since LiteLLM's own
+    # `os.environ/VARNAME` config substitution only resolves inside each
+    # model's litellm_params block, never the outer model_name key — see the
+    # template's header comment for the full explanation. The vendor image's
+    # own entrypoint (docker/prod_entrypoint.sh) just execs `litellm "$@"` for
+    # our setup (no ddtrace/supervisord), so replacing it here is safe.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        sed
+        -e "s|__SERVED_MODEL_NAME__|${SERVED_MODEL_NAME}|g"
+        -e "s|__EMBEDDING_SERVED_MODEL_NAME__|${EMBEDDING_SERVED_MODEL_NAME}|g"
+        /app/config.yaml.template > /tmp/config.yaml &&
+        exec litellm --config /tmp/config.yaml --port 4000
     ports:
       - "${LITELLM_PORT}:4000"
     volumes:
-      - ./config/litellm/config.yaml:/app/config.yaml:ro
+      - ./config/litellm/config.yaml.template:/app/config.yaml.template:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"]
       interval: 30s

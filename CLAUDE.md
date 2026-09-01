@@ -21,6 +21,7 @@
   - `docker-compose.yml` is an immutable, environment-agnostic blueprint.
   - **ALL** image repositories, tags, release versions, container registry prefixes, ports, volume paths, GPU IDs, model names, memory thresholds, and credentials **MUST** be defined in `.env`.
   - **Zero Hardcoded Image Tags:** Never hardcode image names or tags (e.g., `image: vllm/vllm-openai:latest`) in `docker-compose.yml`. Use explicit variable pairs (e.g., `image: ${REGISTRY_PREFIX:-}${VLLM_IMAGE}:${VLLM_VERSION}`).
+  - **Bind-mounted service configs (nginx, litellm, ...) are not exempt.** A static config file that hardcodes a value already defined in `.env` (a model name, a size limit, ...) is a parameterization violation even though `docker-compose.yml` itself stays clean — it just relocates the drift risk one file over, and it WILL drift (this bit us once already: `config/litellm/config.yaml` hardcoded the served model names, and forgetting to hand-update it after changing `.env` produced `"Invalid model name passed in"` at request time). The fix, and the required pattern for any future config file with this problem: make it a `*.template` and render it from `.env` at container start — via the image's own built-in mechanism if it has one (e.g. nginx's `envsubst`-on-templates entrypoint feature), or an `entrypoint`/`command` override that renders it (`sed`/`envsubst`) before exec'ing the real process otherwise. `.env` must stay the only file a human ever edits to reconfigure or fix the stack.
 - **Disconnected / Offline Operation:**
   - Assume zero internet egress on the target deployment host.
   - Models load strictly from host bind mounts (`${LOCAL_MODELS_DIR}/...`).
@@ -72,10 +73,10 @@ AI-Stack/
 ├── config/
 │   ├── nginx/
 │   │   ├── nginx.conf           # Reverse proxy configuration & upstream balancing
-│   │   ├── conf.d/default.conf  # SSL termination, WebSockets, and service routes
+│   │   ├── templates/default.conf.template  # SSL termination, WebSockets, routes — envsubst'd from .env at container start
 │   │   └── certs/                # TLS cert/key (gitignored; generate_self_signed_cert.sh populates this)
 │   ├── litellm/
-│   │   └── config.yaml          # Model mapping and proxy routing for LLMs + NeMo
+│   │   └── config.yaml.template # Model mapping/routing template — sed-rendered from .env at container start
 │   ├── open-webui/              # Open WebUI persistent configurations (gitignored)
 │   └── fips-workaround/         # FIPS-host bind-mount override for vllm/embeddings — see .env.example
 ├── models/                      # Host directory for offline model weights / HF cache
