@@ -55,6 +55,13 @@ download() {
 download "${MODEL_NAME}" "${MODELS_DIR}/${MODEL_DIR}"
 download "${EMBEDDING_MODEL_NAME}" "${MODELS_DIR}/${EMBEDDING_MODEL_DIR}"
 
+# Autocomplete model is optional (see AUTOCOMPLETE_* comments in .env.example)
+# — only fetch it if configured, so hosts not using that feature don't pay
+# for an unused ~4GB download.
+if [[ -n "${AUTOCOMPLETE_MODEL_NAME:-}" ]]; then
+    download "${AUTOCOMPLETE_MODEL_NAME}" "${MODELS_DIR}/${AUTOCOMPLETE_MODEL_DIR}"
+fi
+
 echo "-----------------------------------------"
 echo "Done. Staged models:"
 du -sh "${MODELS_DIR}"/*/ 2>/dev/null || true
