@@ -28,12 +28,14 @@
 # host-deployment configuration, matching the same fixed-port precedent used
 # throughout docker-compose.yml.
 #
-# KNOWN QUIRK (litellm v1.83.14-stable + vllm v0.28.0): calling POST
-# /v1/embeddings through this proxy with a bare string `input` (no
-# `encoding_format`) fails with a vLLM-side pydantic validation error —
-# LiteLLM forwards `encoding_format: null` explicitly, which vLLM's request
-# schema union rejects. Send `input` as a list and `encoding_format: "float"`
-# explicitly, e.g. {"input": ["text"], "encoding_format": "float"}. Calling
+# HISTORICAL QUIRK, CONFIRMED FIXED as of litellm v1.99.1 (still noted here
+# in case a future downgrade reintroduces it): on litellm v1.83.14-stable +
+# vllm v0.28.0, calling POST /v1/embeddings through this proxy with a bare
+# string `input` (no `encoding_format`) failed with a vLLM-side pydantic
+# validation error — LiteLLM forwarded `encoding_format: null` explicitly,
+# which vLLM's request schema union rejected. The workaround was to send
+# `input` as a list and `encoding_format: "float"` explicitly, e.g.
+# {"input": ["text"], "encoding_format": "float"}. Calling
 # the embeddings service directly (bypassing litellm) accepts a bare string
 # fine. Most OpenAI client SDKs already send both fields this way by default.
 
