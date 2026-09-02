@@ -70,7 +70,7 @@ These were hit and fixed while standing this stack up on this hardware/host; wor
 - **LiteLLM Admin UI needs Postgres:** LiteLLM's `/ui` login (and virtual keys/budgets/spend tracking) requires a database — without one it fails with `Authentication Error. Not connected to DB!` even with correct credentials. The `postgres` service provides this; LiteLLM runs its own schema migration automatically on startup, no manual step needed. The UI login (`LITELLM_UI_USERNAME`/`LITELLM_UI_PASSWORD`) is intentionally a separate credential from `LITELLM_MASTER_KEY`, so the all-powerful API key doesn't double as a UI password handed out to admins.
 - **Model size vs. tool-calling reliability:** Open WebUI has built-in tools (e.g. `search_knowledge_bases`) that models can call autonomously, on by default, in every chat — not scoped to whether you attached Knowledge. Small models (the original default, `Qwen2.5-3B-Instruct`) are prone to malformed calls on multi-parameter schemas — e.g. filling in optional args that have visible defaults while dropping the one required arg that doesn't. The default is now `Qwen2.5-7B-Instruct-AWQ` (4-bit, ~5GB) specifically for more reliable tool-calling; quantized so it still comfortably shares this test box's single GPU with the embeddings service. `--quantization` is intentionally not passed on the vLLM command — it auto-detects from the model's `quantization_config` in `config.json`, so `docker-compose.yml` doesn't need to change between quantized and full-precision models.
 - **`VLLM_MAX_MODEL_LEN` is a VRAM budget knob, not just a model capability setting.** The model natively supports up to 32768 tokens, but vLLM must pre-allocate enough KV cache to serve at least one request at that length — with this test box's `VLLM_GPU_MEMORY_UTILIZATION=0.35` budget, 32768 needs ~1.75GB of KV cache against only ~1.61GB available, and vLLM refuses to start at all (`ValueError: ... KV cache is needed, which is larger than the available KV cache memory`, then crash-loops under `restart: unless-stopped`). Conversely, too low a value (the original `8192`) causes a *different* failure at request time — `ContextWindowExceededError` — the moment a RAG-retrieved source pushes the prompt past the cap. `24576` is the current default: comfortably under both failure modes, with headroom left for concurrent requests, not just a single one right at the edge. If you raise `VLLM_GPU_MEMORY_UTILIZATION` (e.g. because embeddings' `0.55` has slack in practice), you can push `VLLM_MAX_MODEL_LEN` higher too — vLLM's own startup error reports the exact maximum supportable length for whatever budget you give it.
-- **Autocomplete model: CodeGemma, not Gemma 4 E4B.** Gemma 4 E4B was the first choice for the code-completion service (small, efficient, same family as the primary use case that prompted it) — but there's an [open, unresolved report](https://huggingface.co/google/gemma-4-E4B/discussions/3) that its `tokenizer_config.json` is missing FIM (fill-in-the-middle) special tokens entirely, and Gemma 4's technical report doesn't document FIM pretraining the way CodeGemma's does. Unlike Gemma 2, Google didn't ship an equivalent FIM-specialized sibling for Gemma 4, so `TechxGenus/CodeGemma-7b-AWQ` (built on Gemma, explicitly FIM-pretrained, documented working tokens) is the actually-functional choice from the same lineage. Worth re-evaluating Gemma 4 E4B once that gap is resolved upstream, if it ever is.
+- **Autocomplete model: three tried, one verified working.** (1) Gemma 4 E4B — an [open, unresolved report](https://huggingface.co/google/gemma-4-E4B/discussions/3) that its `tokenizer_config.json` is missing FIM special tokens entirely. (2) `TechxGenus/CodeGemma-7b-AWQ` — loaded and served fine, but a live test showed the model treating `<|fim_prefix|>` as literal text; `/tokenize` confirmed this specific third-party AWQ repackaging fragments each FIM marker into 7 sub-word tokens instead of one atomic special token — a real defect in that repo, not a config mistake. (3) `ibm-granite/granite-3.3-8b-base` — **verified working live**: `/tokenize` confirms `<fim_prefix>`/`<fim_middle>`/`<fim_suffix>` are atomic tokens at their documented IDs, and real completions are correct (prefix `return n * `, suffix `print(factorial(5))` → generates exactly `factorial(n-1)`, stopping cleanly). IBM's docs note FIM support was added specifically in the 3.3 generation — `granite-3.1-8b-base` has the same tokens present in its vocab (inherited reserved IDs) but did *not* produce correct completions in the same live test, so don't assume token presence alone means a model can actually do FIM. No quantized version of the base model exists yet from a reputable source, so this one runs at full precision (~16GB) — needs a dedicated GPU, not sharing this test box's single 3090.
 
 ## Feeding a codebase into the RAG pipeline
 
@@ -134,11 +134,11 @@ Same re-run caveat as the git script applies: re-running against the same
 
 ## VSCode autocomplete (FIM code completion)
 
-An optional `autocomplete` vLLM service (CodeGemma-7B, 4-bit AWQ — see the "Known
-gotchas" note above for why not Gemma 4) serves fill-in-the-middle completions for
-editor extensions like [Continue](https://continue.dev). It's gated behind a Compose
-profile so it doesn't start — and doesn't try to claim GPU memory — on hosts that
-aren't using it:
+An optional `autocomplete` vLLM service (`ibm-granite/granite-3.3-8b-base` — see the
+"Known gotchas" note above for the two models rejected before landing on this one)
+serves fill-in-the-middle completions for editor extensions like
+[Continue](https://continue.dev). It's gated behind a Compose profile so it doesn't
+start — and doesn't try to claim GPU memory — on hosts that aren't using it:
 
 ```bash
 # One-off:
@@ -149,38 +149,48 @@ echo "COMPOSE_PROFILES=autocomplete" >> .env
 ```
 
 Before enabling it, set `AUTOCOMPLETE_GPU_IDS` / `AUTOCOMPLETE_GPU_MEMORY_UTILIZATION`
-in `.env` for hardware that actually has room for a third model — on a single shared
-GPU already running `vllm` + `embeddings` (like this project's test box), that means
-either a second/dedicated GPU or lowering the other two services' utilization to make
-space. `AUTOCOMPLETE_GPU_MEMORY_UTILIZATION` ships blank on purpose: vLLM will refuse
-to start and tell you rather than silently fighting the other services for VRAM.
+in `.env` for hardware that actually has room — this model runs at full precision
+(~16GB of weights alone, no reputable quantized version of the base model exists yet),
+so realistically that means a dedicated/second GPU, not squeezing onto a single shared
+GPU already running `vllm` + `embeddings` (like this project's test box).
+`AUTOCOMPLETE_GPU_MEMORY_UTILIZATION` ships blank on purpose: vLLM will refuse to start
+and tell you rather than silently fighting the other services for VRAM.
 
 It's reachable directly (`http://localhost:${AUTOCOMPLETE_PORT}`, default `8002`) or
-through LiteLLM (`codegemma-7b`, alongside the other two models) — direct is simpler
-for an editor extension since FIM completion doesn't need chat/tool-calling routing.
+through LiteLLM (`granite-3.3-8b-base`, alongside the other two models) — direct is
+simpler for an editor extension since FIM completion doesn't need chat/tool-calling
+routing.
 
-CodeGemma's FIM prompt format (verified against its model card):
+Granite's FIM prompt format — **single angle brackets**, unlike CodeGemma's
+pipe-delimited style (`<|fim_prefix|>`) — verified via a live `/tokenize` call
+confirming these are atomic special tokens, not this project's assumption:
 ```
-<|fim_prefix|>{code before cursor}<|fim_suffix|>{code after cursor}<|fim_middle|>
+<fim_prefix>{code before cursor}<fim_suffix>{code after cursor}<fim_middle>
+```
+
+Verified live, temperature 0, against the actual running service:
+```
+prompt: <fim_prefix>def factorial(n):
+            if n == 0:
+                return 1
+            else:
+                return n * <fim_suffix>
+
+        print(factorial(5))<fim_middle>
+completion: "factorial(n-1)"          (finish_reason: stop, not truncated)
 ```
 
 Example Continue (`~/.continue/config.yaml`) autocomplete model entry:
 ```yaml
 models:
-  - name: CodeGemma Autocomplete
+  - name: Granite Autocomplete
     provider: openai
-    model: codegemma-7b
+    model: granite-3.3-8b-base
     apiBase: http://localhost:8002/v1
     apiKey: not-required
     roles:
       - autocomplete
 ```
-
-**Note:** this service was verified for correct config/routing (docker-compose profile
-gating, LiteLLM route registration) but not for live completion quality — the test box
-this stack was developed on has a single GPU with no VRAM room left once `vllm` +
-`embeddings` are running. Verify actual FIM completion output on a host that can
-actually run it.
 
 ## Verification
 
