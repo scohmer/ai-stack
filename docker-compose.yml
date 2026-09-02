@@ -68,10 +68,15 @@ services:
       - OPENAI_API_KEY=${LITELLM_MASTER_KEY}
       - ENABLE_OLLAMA_API=false
       # RAG embeddings call the embeddings service DIRECTLY, not through
-      # litellm: litellm v1.83.14-stable always forwards `encoding_format:
-      # null` to openai/-passthrough providers, which vllm v0.28.0's
-      # /v1/embeddings schema rejects outright (see config/litellm/config.yaml.template
-      # comment). Bypassing litellm here sidesteps that incompatibility.
+      # litellm. Originally worked around a litellm v1.83.14-stable bug
+      # (always forwarding `encoding_format: null` to openai/-passthrough
+      # providers, which vllm v0.28.0's /v1/embeddings schema rejected
+      # outright) — confirmed FIXED as of litellm v1.99.1 (a bare-string
+      # `input` with no `encoding_format` now works fine through litellm
+      # too). Left as direct-to-embeddings-service anyway: it already works,
+      # changing it isn't necessary, and this note plus
+      # config/litellm/config.yaml.template's stays as the historical record
+      # in case a future downgrade reintroduces the bug.
       - RAG_EMBEDDING_ENGINE=openai
       - RAG_EMBEDDING_MODEL=${EMBEDDING_SERVED_MODEL_NAME}
       - RAG_OPENAI_API_BASE_URL=http://embeddings:8000/v1
