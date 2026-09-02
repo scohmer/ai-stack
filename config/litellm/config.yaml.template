@@ -1,0 +1,59 @@
+# AI-Stack — LiteLLM Proxy routing (TEMPLATE — not consumed directly)
+#
+# This file is never mounted into the litellm container as-is. The litellm
+# service's entrypoint (docker-compose.yml) renders it with `sed`, substituting
+# __SERVED_MODEL_NAME__ / __EMBEDDING_SERVED_MODEL_NAME__ from the SAME .env
+# vars vllm's --served-model-name flags use, before exec'ing litellm against
+# the rendered file. This is what makes SERVED_MODEL_NAME /
+# EMBEDDING_SERVED_MODEL_NAME in .env the single source of truth for these
+# names: change them there and `docker compose up -d --force-recreate litellm`
+# picks up the new names everywhere (both the client-facing model_name and the
+# upstream litellm_params.model) — no manual edits to this file, ever.
+#
+# (LiteLLM's own config loader resolves `os.environ/VARNAME` values, but only
+# inside each model's `litellm_params` block — never for the outer `model_name`
+# key, which is why the sed render step exists at all: it's the only way to
+# keep model_name in sync too. Verified by reading litellm/proxy/proxy_server.py
+# in the actual installed package.)
+#
+# api_base values use the internal docker network service names and the
+# FIXED in-container ports (vllm/embeddings both listen on 8000 inside their
+# own containers regardless of the host-exposed VLLM_PORT/EMBEDDINGS_PORT) —
+# these are deliberately not env-driven; they're internal wiring, not
+# host-deployment configuration, matching the same fixed-port precedent used
+# throughout docker-compose.yml.
+#
+# KNOWN QUIRK (litellm v1.83.14-stable + vllm v0.28.0): calling POST
+# /v1/embeddings through this proxy with a bare string `input` (no
+# `encoding_format`) fails with a vLLM-side pydantic validation error —
+# LiteLLM forwards `encoding_format: null` explicitly, which vLLM's request
+# schema union rejects. Send `input` as a list and `encoding_format: "float"`
+# explicitly, e.g. {"input": ["text"], "encoding_format": "float"}. Calling
+# the embeddings service directly (bypassing litellm) accepts a bare string
+# fine. Most OpenAI client SDKs already send both fields this way by default.
+
+model_list:
+  - model_name: __SERVED_MODEL_NAME__
+    litellm_params:
+      model: openai/__SERVED_MODEL_NAME__
+      api_base: http://vllm:8000/v1
+      api_key: "not-required"
+
+  - model_name: __EMBEDDING_SERVED_MODEL_NAME__
+    litellm_params:
+      model: openai/__EMBEDDING_SERVED_MODEL_NAME__
+      api_base: http://embeddings:8000/v1
+      api_key: "not-required"
+    # Required: LiteLLM can't infer "this is an embedding model" from a
+    # custom/self-hosted model name the way it can for known provider models —
+    # without this it 400s on /embeddings with "Invalid model name passed in".
+    model_info:
+      mode: embedding
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  salt_key: os.environ/LITELLM_SALT_KEY

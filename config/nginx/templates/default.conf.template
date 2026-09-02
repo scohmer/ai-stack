@@ -1,4 +1,14 @@
-# AI-Stack — service routing
+# AI-Stack — service routing (TEMPLATE)
+#
+# This is rendered by the STOCK nginx image's own built-in entrypoint script
+# (/docker-entrypoint.d/20-envsubst-on-templates.sh) — any *.template file
+# under /etc/nginx/templates/ gets `envsubst`'d into /etc/nginx/conf.d/ at
+# container start, substituting ${VAR} from whatever's in the container's
+# environment (docker-compose's `environment:` list on the nginx service).
+# No custom wrapper needed; this is a standard, documented nginx image
+# feature. Only variables actually present in the container's environment
+# get substituted, so nginx's own `$host`/`$scheme`/etc. runtime variables
+# below are left untouched (they're not among the container's env vars).
 #
 # / (root)    -> Open WebUI (chat frontend), WebSocket-aware
 # /litellm/   -> LiteLLM Proxy (unified OpenAI-compatible gateway), prefix stripped
@@ -29,9 +39,9 @@ upstream qdrant_upstream {
 }
 
 # Plain HTTP: redirect everything to HTTPS.
-# $host already carries whatever host:port the client used to reach us
-# (nginx config files are static, not env-substituted, so NGINX_HTTPS_PORT
-# from .env can't be interpolated here directly).
+# $host already carries whatever host:port the client used to reach us, so
+# NGINX_HTTPS_PORT doesn't need to be interpolated into this redirect target
+# even though templating now makes that possible.
 server {
     listen 80;
     server_name _;
@@ -45,6 +55,9 @@ server {
     ssl_certificate     /etc/nginx/certs/server.crt;
     ssl_certificate_key /etc/nginx/certs/server.key;
     ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Needed for large model prompts / file uploads through Open WebUI.
+    client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
 
     location / {
         proxy_pass http://open_webui_upstream;
