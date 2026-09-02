@@ -12,6 +12,7 @@
   - **Vector DB:** Qdrant (`${QDRANT_IMAGE}:${QDRANT_VERSION}`)
   - **Embeddings:** US-Sourced NVIDIA NeMo / NV-Embed series (`${EMBEDDINGS_IMAGE}:${EMBEDDINGS_VERSION}`)
   - **State Store:** Postgres (`${POSTGRES_IMAGE}:${POSTGRES_VERSION}`) — backs the LiteLLM Admin UI, virtual keys, budgets, and spend tracking. LiteLLM self-migrates its schema on startup once `DATABASE_URL` is set; no manual migration step.
+  - **Autocomplete Inference Engine (optional):** vLLM (`${AUTOCOMPLETE_IMAGE}:${AUTOCOMPLETE_VERSION}`) — code-completion (FIM) for editor integrations, gated behind the `autocomplete` Compose profile so it doesn't compete for GPU memory on hosts not using it. See README's "VSCode autocomplete" section.
 
 ---
 

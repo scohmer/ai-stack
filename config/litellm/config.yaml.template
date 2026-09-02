@@ -2,13 +2,18 @@
 #
 # This file is never mounted into the litellm container as-is. The litellm
 # service's entrypoint (docker-compose.yml) renders it with `sed`, substituting
-# __SERVED_MODEL_NAME__ / __EMBEDDING_SERVED_MODEL_NAME__ from the SAME .env
-# vars vllm's --served-model-name flags use, before exec'ing litellm against
-# the rendered file. This is what makes SERVED_MODEL_NAME /
-# EMBEDDING_SERVED_MODEL_NAME in .env the single source of truth for these
-# names: change them there and `docker compose up -d --force-recreate litellm`
-# picks up the new names everywhere (both the client-facing model_name and the
-# upstream litellm_params.model) — no manual edits to this file, ever.
+# __SERVED_MODEL_NAME__ / __EMBEDDING_SERVED_MODEL_NAME__ /
+# __AUTOCOMPLETE_SERVED_MODEL_NAME__ from the SAME .env vars vllm's
+# --served-model-name flags use, before exec'ing litellm against the rendered
+# file. This is what makes those vars in .env the single source of truth for
+# these names: change one there and `docker compose up -d --force-recreate
+# litellm` picks up the new name everywhere (both the client-facing
+# model_name and the upstream litellm_params.model) — no manual edits to this
+# file, ever.
+#
+# The autocomplete route below is rendered unconditionally even though that
+# vllm service only actually runs under the "autocomplete" Compose profile —
+# see docker-compose.yml's litellm entrypoint comment for why that's fine.
 #
 # (LiteLLM's own config loader resolves `os.environ/VARNAME` values, but only
 # inside each model's `litellm_params` block — never for the outer `model_name`
@@ -49,6 +54,12 @@ model_list:
     # without this it 400s on /embeddings with "Invalid model name passed in".
     model_info:
       mode: embedding
+
+  - model_name: __AUTOCOMPLETE_SERVED_MODEL_NAME__
+    litellm_params:
+      model: openai/__AUTOCOMPLETE_SERVED_MODEL_NAME__
+      api_base: http://autocomplete:8000/v1
+      api_key: "not-required"
 
 litellm_settings:
   drop_params: true

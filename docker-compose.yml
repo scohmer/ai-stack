@@ -167,6 +167,49 @@ services:
       - ai-stack-net
 
   # ---------------------------------------------------------------------
+  # Autocomplete — code-completion inference engine (VSCode/Continue-style
+  # FIM), served via vLLM. OPTIONAL: gated behind the "autocomplete" Compose
+  # profile (see AUTOCOMPLETE_* comments in .env.example) — does not start
+  # with a bare `docker compose up -d`.
+  #
+  # No --enable-auto-tool-choice/--tool-call-parser: this serves raw FIM
+  # /v1/completions, not chat/tool-calling, unlike the vllm service above.
+  # ---------------------------------------------------------------------
+  autocomplete:
+    profiles: ["autocomplete"]
+    image: ${REGISTRY_PREFIX}${AUTOCOMPLETE_IMAGE}:${AUTOCOMPLETE_VERSION}
+    container_name: ai-stack-autocomplete
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=${AUTOCOMPLETE_GPU_IDS}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE}
+      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE}
+      - HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE}
+    command: >
+      --model /models/${AUTOCOMPLETE_MODEL_DIR}
+      --served-model-name ${AUTOCOMPLETE_SERVED_MODEL_NAME}
+      --max-model-len ${AUTOCOMPLETE_MAX_MODEL_LEN}
+      --gpu-memory-utilization ${AUTOCOMPLETE_GPU_MEMORY_UTILIZATION}
+      --host 0.0.0.0
+      --port 8000
+    ports:
+      - "${AUTOCOMPLETE_PORT}:8000"
+    volumes:
+      - ${LOCAL_MODELS_DIR}:/models:ro
+      # FIPS-host / Ubuntu-base-image workaround — see .env.example comment.
+      - ${FIPS_OVERRIDE_FILE}:/proc/sys/crypto/fips_enabled:ro
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/models')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - ai-stack-net
+
+  # ---------------------------------------------------------------------
   # Postgres — LiteLLM's state store (Admin UI, virtual keys, budgets,
   # rate limits, spend/usage tracking). LiteLLM runs its own schema
   # migrations automatically on startup once DATABASE_URL is set — no
@@ -221,19 +264,26 @@ services:
       - UI_PASSWORD=${LITELLM_UI_PASSWORD}
     # config.yaml.template hardcodes no model names — it's rendered into a
     # real config.yaml here at container start, substituting SERVED_MODEL_NAME
-    # / EMBEDDING_SERVED_MODEL_NAME from .env (the same vars vllm/embeddings'
-    # --served-model-name flags use) via `sed`, since LiteLLM's own
-    # `os.environ/VARNAME` config substitution only resolves inside each
-    # model's litellm_params block, never the outer model_name key — see the
-    # template's header comment for the full explanation. The vendor image's
-    # own entrypoint (docker/prod_entrypoint.sh) just execs `litellm "$@"` for
-    # our setup (no ddtrace/supervisord), so replacing it here is safe.
+    # / EMBEDDING_SERVED_MODEL_NAME / AUTOCOMPLETE_SERVED_MODEL_NAME from .env
+    # (the same vars vllm/embeddings/autocomplete's --served-model-name flags
+    # use) via `sed`, since LiteLLM's own `os.environ/VARNAME` config
+    # substitution only resolves inside each model's litellm_params block,
+    # never the outer model_name key — see the template's header comment for
+    # the full explanation. The autocomplete route is always rendered here
+    # even though that service only actually runs under the "autocomplete"
+    # Compose profile — a route pointing at a currently-unreachable api_base
+    # is harmless (LiteLLM only errors when someone actually calls it), and
+    # this keeps AUTOCOMPLETE_SERVED_MODEL_NAME required-non-blank in .env
+    # rather than needing conditional rendering logic. The vendor image's own
+    # entrypoint (docker/prod_entrypoint.sh) just execs `litellm "$@"` for our
+    # setup (no ddtrace/supervisord), so replacing it here is safe.
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >
         sed
         -e "s|__SERVED_MODEL_NAME__|${SERVED_MODEL_NAME}|g"
         -e "s|__EMBEDDING_SERVED_MODEL_NAME__|${EMBEDDING_SERVED_MODEL_NAME}|g"
+        -e "s|__AUTOCOMPLETE_SERVED_MODEL_NAME__|${AUTOCOMPLETE_SERVED_MODEL_NAME}|g"
         /app/config.yaml.template > /tmp/config.yaml &&
         exec litellm --config /tmp/config.yaml --port 4000
     ports:
